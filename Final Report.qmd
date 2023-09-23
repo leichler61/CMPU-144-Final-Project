@@ -1,0 +1,411 @@
+---
+title: "Final Report"
+format:
+  html:
+    theme: spacelab
+link-citations: yes
+self-contained: true
+execute: 
+  eval: true
+  message: false
+  warning: false
+editor_options: 
+  chunk_output_type: inline
+authors: "Feng Wan and Lily Eichler"
+date: "November 22, 2022"
+embed-resources: true 
+---
+
+```{r Packages}
+#| message: false
+#| warning: false
+#| echo: false
+# Loading the necessary packages
+
+library(tidyverse)
+library(readr)
+library(tidymodels)
+library(lubridate)
+library(knitr)
+```
+
+```{r Data}
+#| message: false
+#| warning: false
+#| echo: false
+# Reading in the data
+
+case <- read_csv("Data/covid_cases.csv")
+vaccines <- read_csv("Data/owid-covid-data.csv")
+population <- read_csv("Data/population_by_country_2020.csv")
+```
+
+## Introduction and Data
+
+COVID-19 has been an immensely impactful aspect of everyday life for the past three years. Hundreds of millions of COVID-19 cases have resulted in millions of deaths, and subsequently the development of COVID-19 vaccines, of which billions of doses have been given worldwide. Our research aims to answer how these worldwide vaccine distributions have affected the number of confirmed COVID-19 cases in each region of the world (as determined by the World Health Organization's regions of the world).
+
+Our data was collected from the World Health Organization's data on the cumulative confirmed COVID-19 cases, ourworldindata.org's data on vaccine distributions, and kaggle.com's data on population in 2020 by country. The former two data sets are collected on a daily basis and regularly updated, but we have chosen to cut them off at November 1, 2022 to ensure consistent data, and both collect their data through reports submitted by countries and governments. The latter data set was collected near the end of 2020 through web scraping. The observations for the first and second data sets represent individual days and the observations for the third data set represent countries. The relevant variables to our analysis are the date the data was collected, the country of the data's origin, the region of the world that country lies within, the number of new confirmed COVID-19 cases by region, the number of new vaccines distributed by region, and the population by country.
+
+Our null hypothesis is that distribution of vaccines has no effect on the number of confirmed COVID-19 cases for any region of the world given that the date is included in the model, and that any perceived effect is due to natural variability within the data or other factors, including confounding variables. H~0~: β = 0 for any region of the world given that the date is included in the model. Our alternative hypothesis is that distribution of vaccines does have an effect on the number of confirmed COVID-19 cases for at least one region of the world given that the date is included in the model. H~A~: β != 0 for any region of the world given that the date is included in the model.
+
+In this study, we will examine the change in the number of new confirmed COVID-19 cases as new vaccines are distributed in various regions of the world.
+
+## Methodology
+
+We will conduct a randomization hypothesis test utilizing permutation to create a null sampling distribution and bootstrapping to create a 95% confidence interval. The significance level will be equal to 0.05. This hypothesis test aims to determine the relationship between the number of new COVID-19 cases and the number of vaccines distributed by region. In order to do so, we assume linearity and independent observations. We fit the assumption of independence with a random scatter in the logarithm residual plot below and account for the lack of linearity between the explanatory and response variables with the logarithm regression model.
+
+We will apply the `lag` function to match the statistics of new vaccines with the statistics of new cases 14 days earlier, since the COVID-19 vaccines usually have an effect after 14 days. 
+
+The following residual plots allow us to test the strength of the various regression models. The visualizations following that show the distribution of COVID-19 cases and vaccines for each region of the world. After that, the scatter plots visualize the correlation between the two variables in different regions of the world and in different years, respectively. The logarithm regression model will depict the relationship between the new cases and new vaccines with the date and region included.
+
+```{r Case data set}
+#| message: false
+#| warning: false
+#| echo: false
+# Creating and mutating necessary variables within the case data set, and filtering for the necessary data
+
+case <- case %>%
+  mutate(year = year(Date_reported)) %>%
+  mutate(month = month(Date_reported)) %>%
+  mutate(day = day(Date_reported)) %>%
+  mutate(region = `WHO_region`) %>%
+  filter(region != "NA") %>%
+  mutate(region = factor(region)) %>%
+  mutate(region = fct_relevel(region, "Other", after = 0))
+```
+
+```{r Slicing for the latest date each year for each country}
+#| message: false
+#| warning: false
+#| echo: false
+# Filtering and selecting within the vaccines data set for only the necessary data
+
+vaccines <- vaccines %>%
+  filter(!is.na(total_vaccinations_per_hundred)) %>%
+  mutate(year = year(date)) %>%
+  mutate(month = month(date)) %>%
+  mutate(day = day(date)) %>%
+  select(location, date, year, month, day, total_vaccinations_per_hundred)
+```
+
+```{r Changing variable names}
+#| message: false
+#| warning: false
+#| echo: false
+# Changing variable names within the population data set
+
+population <- population %>%
+  mutate(Country = `Country (or dependency)`) %>%
+  mutate(population = `Population (2020)`) %>%
+  select(Country, population)
+```
+
+```{r Joining data sets}
+#| message: false
+#| warning: false
+#| echo: false
+# Joining the case and population data sets
+
+case <- case %>%
+  left_join(population)
+```
+
+```{r Full_data data set}
+#| message: false
+#| warning: false
+#| echo: false
+# Creating the full_data data set and changing it as necessary
+
+full_data <- case %>%
+  left_join(vaccines, by = c("Country" = "location", "year", "month", "day")) %>%
+  filter(!is.na(total_vaccinations_per_hundred)) %>%
+  group_by(Country) %>%
+  mutate(lag_vaccine = lag(total_vaccinations_per_hundred, n = 14)) %>%
+  filter(!is.na(lag_vaccine)) %>%
+  group_by(Country, year, month) %>%
+  slice(n = n())
+
+full_data <- full_data %>%
+  group_by(Country) %>%
+  mutate(new_cases = Cumulative_cases - lag(Cumulative_cases, n = 1), 
+         new_vaccine = total_vaccinations_per_hundred - lag(total_vaccinations_per_hundred, n = 1)) %>%
+  filter(!is.na(new_cases), !is.na(new_vaccine)) %>%
+  mutate(new_case_per_10000 = new_cases * 10000 / population) %>%
+  select(Date_reported, Country, year, month, day, region, new_case_per_10000, new_vaccine, population) %>%
+  mutate(log_new_case = log(new_case_per_10000 + 0.00001))
+```
+
+### Visualizations
+
+#### Residual Plots
+
+```{r Linear Residual Plot}
+#| message: false
+#| warning: false
+#| echo: false
+# Plotting the spread of the residuals around the linear regression line
+
+linear_reg <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(new_case_per_10000 ~ new_vaccine + day + month + year + region, data = full_data)
+
+linear_reg_aug <- augment(linear_reg$fit)
+
+ggplot(linear_reg_aug, mapping = aes(x = .fitted, y = .resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "gray", lty = "dashed") +
+  labs(title = "Linear Residual Plot", x = "Predicted New Cases", y = "Residuals") + theme_minimal()
+```
+
+```{r Curvilinear Residual Plot}
+#| message: false
+#| warning: false
+#| echo: false
+# Plotting the spread of the residuals around the curvilinear regression line
+
+full_data <- full_data %>% 
+  mutate(vaccine_sq = (new_vaccine)^2)
+
+curv_vaccine_fit <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(new_case_per_10000 ~ new_vaccine + vaccine_sq, data = full_data)
+curv_vaccine_fit_aug <- augment(curv_vaccine_fit$fit)
+
+ggplot(curv_vaccine_fit_aug, mapping = aes(x = .fitted, y = .resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "gray", lty = "dashed") +
+  labs(x = "Predicted New Cases", y = "Residuals",
+       title = "Curvilinear Residual Plot") + theme_minimal()
+```
+
+```{r Logarithm Residual Plot}
+#| message: false
+#| warning: false
+#| echo: false
+# Plotting the spread of the residuals around the linear regression line transformed with logarithm
+
+log_reg <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(log(new_case_per_10000 + 0.00001) ~ new_vaccine + day + month + year + region, data = full_data)
+
+log_reg_aug <- augment(log_reg$fit)
+
+ggplot(log_reg_aug, mapping = aes(x = .fitted, y = .std.resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "gray", lty = "dashed") +
+  labs(x = "Predicted New Cases", y = "Residuals",
+       title = "Logarithm Residual Plot") + theme_minimal()
+```
+
+The logarithm residual plot has the most random scatter of points around the regression line with a few outliers and the least obvious pattern, so it is the most accurate. Since we require the condition of a random spread of residuals on the residual plot in order to conduct the hypothesis test, we cannot trust our results from the linear or curvilinear regression lines. The hypothesis test will be conducted with the logarithm regression line to obtain the most accurate results.
+
+The following two plots show the relationship between the two variables of vaccines and confirmed cases with first a linear regression line and then a logarithm regression line. The latter plot is a much better fit for the data.
+
+```{r Linear Regression Plot}
+#| message: false
+#| warning: false
+#| echo: false
+# A plot mapping the relationship between vaccines and COVID-19 cases with the linear regression line
+
+full_data %>%
+  ggplot(aes(x = new_vaccine, y = new_case_per_10000)) +
+  geom_point() +
+  labs(title = "COVID-19 Vaccines vs. Cases with a Linear Regression Line",
+       subtitle = "For Every Region (2021-2022)",
+       x = "New COVID-19 Vaccines", 
+       y = "New COVID-19 Cases Per 10000 People") + theme_minimal() + geom_smooth(se = FALSE, method = "lm")
+
+```
+
+```{r Logarithm Regression Plot}
+#| message: false
+#| warning: false
+#| echo: false
+# A plot mapping the relationship between vaccines and COVID-19 cases with the logairthm regression line
+
+full_data %>%
+  ggplot(aes(x = new_vaccine, y = log_new_case)) +
+  geom_point() +
+  labs(title = "COVID-19 Vaccines vs. Cases with a Logarithm Regression Line",
+       subtitle = "For Every Region (2021-2022)",
+       x = "New COVID-19 Vaccines", 
+       y = "New COVID-19 Cases Per 10000 People") + theme_minimal() + geom_smooth(se = FALSE, method = "lm")
+```
+
+#### Graph 1
+
+```{r Case Distribution Curve}
+#| message: false
+#| warning: false
+#| echo: false
+# A plot mapping the distribution of new COVID-19 cases per 10000 people
+
+full_data %>%
+  ggplot(aes(x = log_new_case)) +
+  geom_density() +
+  labs(title = "The Distribution of COVID-19 Cases Per 10000 People", 
+       subtitle = "For Every Region (2021-2022)",
+       x = "COVID-19 Cases Per Capita", 
+       y = "Frequency") + theme_minimal() + xlim(0, 300)
+```
+
+#### Graph 2
+
+```{r Vaccine Distribution Curve}
+#| message: false
+#| warning: false
+#| echo: false
+# A plot mapping the distribution of total COVID-19 vaccinations per hundred
+
+vaccines %>%
+  ggplot(aes(x = total_vaccinations_per_hundred)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "The Distribution of COVID-19 Vaccinations Per Hundred",
+       subtitle = "For Every Region (2021-2022)",
+       x = "COVID-19 Vaccinations Per Hundred", 
+       y = "Frequency") + theme_minimal()
+```
+
+#### Graph 3
+
+```{r Relationship between variables by region}
+#| message: false
+#| warning: false
+#| echo: false
+# Plotting a graph of the relationship between cases per 10000 people and new vaccinations per hundred with a linear regression line
+
+full_data %>%
+  ggplot(aes(x = new_vaccine, y = log_new_case)) +
+  geom_jitter(alpha = 0.5) +
+  geom_smooth(se = FALSE, method = "lm") +
+  labs(title = "COVID-19 Cases Per Capita vs. COVID-19 Vaccinations Per Hundred",
+       subtitle = "By Region (2021-2022)",
+       x = "New COVID-19 Vaccinations", 
+       y = "New COVID-19 Cases Per 10000 People") + theme_minimal() + facet_wrap(~ region)
+```
+
+#### Graph 4
+
+```{r Relationships between variables by year}
+#| message: false
+#| warning: false
+#| echo: false
+# Plotting a graph of new vaccines vs new cases per 10000 people with a linear regression line faceted by year
+
+full_data %>%
+  ggplot(aes(x = new_vaccine, y = log_new_case)) +
+  geom_jitter(alpha = 0.5) +
+  geom_smooth(se = FALSE, method = "lm") +
+  labs(title = "COVID-19 Cases Per Capita vs COVID-19 Vaccinations Per Hundred", 
+       subtitle = "By Year", 
+       x = "New COVID-19 Vaccinations", 
+       y = "New COVID-19 Cases Per 10000 People") + theme_minimal()+
+  facet_wrap(~ year)
+```
+
+#### Logarithm Regression Model
+
+```{r Logarithm Regression Model}
+#| message: false
+#| warning: false
+#| echo: false
+# Creating the logarithm regression line for the data as a whole
+
+log_reg <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(log_new_case ~ new_vaccine + day + month + year + region, data = full_data)
+
+log_reg_tidy <- log_reg %>%
+  tidy()
+
+log_reg_tidy %>%
+  knitr::kable()
+```
+
+#### Logarithm Regression Equation
+
+$\hat {NewCase} = `r log_reg_tidy[1, 2]` + \bar {NewVaccine} \times `r log_reg_tidy[2, 2]` + \bar {Day} \times `r log_reg_tidy[3, 2]` + \bar {Month} \times `r log_reg_tidy[4, 2]`$
+
+$+ \bar {Year} \times `r log_reg_tidy[5, 2]` + \bar {AMRO} \times `r log_reg_tidy[6, 2]` + \bar {EMRO} \times `r log_reg_tidy[7, 2]` + \bar {EURO} \times `r log_reg_tidy[8, 2]`$
+
+$+ \bar {SEARO} \times `r log_reg_tidy[9, 2]` + \bar {WPRO} \times `r log_reg_tidy[10, 2]`$
+
+## Hypothesis Testing
+
+Null Sampling Distribution:
+
+```{r Null Distribution for new_vaccine}
+#| message: false
+#| warning: false
+#| echo: false
+# Creating a null sampling distribution through permutation and calculating a p-value for the new_vaccine variable
+
+obs_fit <- full_data %>%
+  specify(log_new_case ~ new_vaccine + day + month + year + region) %>%
+  fit()
+
+set.seed(144)
+null_fits <- full_data %>%
+  specify(log_new_case ~ new_vaccine + day + month + year + region) %>%
+  hypothesize(null = "independence") %>%
+  generate(reps = 1000, type = "permute") %>%
+  fit()
+
+filtered_null_fits <- null_fits %>%
+  filter(term %in% c("new_vaccine"))
+attr(filtered_null_fits, "fitted") <- TRUE
+attr(filtered_null_fits, "type") <- "permute"
+  
+filtered_null_fits %>%
+visualize() + shade_p_value(obs_fit, direction = "both") + theme_minimal() + labs(subtitle = "For Vaccines", x = "Sample Slopes", y = "Count")
+
+p_value <- get_p_value(null_fits, obs_stat = obs_fit, direction = "both")
+```
+
+Confidence Interval:
+
+```{r Confidence Interval}
+#| message: false
+#| warning: false
+#| echo: false
+# Calculating the 95% confidence interval for the true slope through bootstrapping
+
+set.seed(144)
+null_boot <- full_data %>%
+  specify(log_new_case ~ new_vaccine + day + month + year + region) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  fit()
+
+CI <- null_boot %>% 
+  group_by(term) %>% 
+  summarize(lower = quantile(estimate, 0.025), 
+            upper = quantile(estimate, 0.975)) 
+CI %>%
+  knitr::kable()
+```
+
+The 95% confidence interval for the true slope of new COVID-19 cases predicted by new vaccines is (`r CI[4, 2]`, `r CI[4, 3]`).
+
+## Results
+
+The logarithm regression model suggests that the slope of new vaccines is `r log_reg_tidy[2, 2]`, which means that as one new vaccine per hundred people is distributed in any region on any date, the number of new COVID-19 cases per 10000 people is predicted to increase by  a factor of `r exp(log_reg_tidy[2, 2])`. We calculated our null distribution and p-value from the logarithm regression. The expression (without input from day, month, year, or region) is $\hat {NewCase} = `r log_reg_tidy[1, 2]` + \bar {NewVaccine} \times `r exp(log_reg_tidy[2, 2])`$.
+
+In order to test whether our null hypothesis could be rejected, we conducted a null sampling distribution with permutation of the logarithm regression line and a 95% confidence interval with bootstrapping. From the null distribution, we calculated that the p-value is equal to `r p_value[4, 2]`, which is higher than our significance level of 0.05. Therefore, we fail to reject the null hypothesis and claim that there does not exist an association between the number of new vaccines distributed and the number of new confirmed COVID-19 cases for any region of the world.
+
+The 95% confidence interval we calculated for the true change of cases based on vaccines has a lower bound of `r CI[4, 2]` and an upper bound of `r CI[4, 3]`. This means that we are 95% confident that the true slope of number of confirmed COVID-19 cases predicted by number of new vaccines is between the values of `r CI[4, 2]` and `r CI[4, 3]`. These are only positive values, indicating that the slope is positive. From this interval, we can conclude that the slope is both non-zero and positive. We are not able to conclude how many or which regions this relationship is present for, as the alternative hypothesis only checks to see if at least one of them shows a relationship. Therefore, we can only conclude from the confidence interval that for at least one region in the world, there is a positive relationship between the number of new confirmed COVID-19 cases within that region and the number of new vaccines distributed to that region.
+
+These results are seemingly corroborated by the graphs above. As shown in Graph 3, as the number of new vaccines increases, there appears to be a slight increase in the number of new cases for most of the regions of the world, which suggests a positive relationship between the two variables. In the following graph, similar patterns are observed in both 2021 and 2022 as both of the linear regression lines have positive slopes. The correlation between the two variables seems to be stronger in 2022 since the slope of the regression line is steeper.
+
+However, the confidence interval does not agree with our hypothesis test, in which we fail to reject the null and thus claim that the true change is equal to 0, which is not within the calculated interval. This is likely because we do not have enough data or account for enough variables within our study to be able to reject the null hypothesis, not necessarily that the null hypothesis is actually correct. We only fail to reject the null hypothesis, we do not accept it.
+
+Because the hypothesis test and confidence interval do not agree, we will fail to reject the null hypothesis because we do not have enough evidence to reject it.
+
+## Conclusion
+
+One of the improvements that could be made to our study would be to change the amount of time for the potency periods of different kinds of COVID-19 vaccines. This project assumed that 14 days is enough for all kinds of vaccines to come into effect, which is not true in reality. Therefore, a more scientific way to conduct our study would be to include a data set of the kinds of vaccines different regions used at different times and combine that with the full_data data set. After that, we could report the potency period of each kind of vaccine and lag the new vaccine data with the new cases variable based on these different statistics.
+
+We would like to consider our data as reliable since they are reported by authorized organizations such as the World Health Organization and the Our World In Data Organization. Also, since these data sets are reported by the governments of different countries worldwide, they are appropriate and ethical, especially when the purpose of utilizing them is in an effort to help the world mitigate the effects of the pandemic. However, we also received data from kaggle.com, which is not necessarily reputable, as it is only collected and reported by individuals and does not require specific credentials. To improve our study, we could also find worldwide population data from a more reputable source.
+
+If we were to start our study again, we would create a more specific alternative hypothesis in order to be able to make a more specific conclusion. In addition, we would control for the confounding variables of number of people who received the vaccine, the number of doses distributed by region, and the strain of COVID-19 affecting each region, as different vaccines and booster shots are required for different strains. We would have to account for many confounding variables that occur in real life in order to conduct inferential analysis in which our hypothesis test and confidence interval agree and we are able to fully trust our results.
+
+Overall, from our project we learned that real-life data will most likely contain many confounding variables that will affect both the exploratory and inferential data analysis. This has given us a better understanding of our own data exploration and of how confident others are in their own. Moving forward, we will approach others' data and its presentation with critical thinking and a further understanding of how it was conducted, how it might be presented in a biased way, and how these things affect us and others who view the information.

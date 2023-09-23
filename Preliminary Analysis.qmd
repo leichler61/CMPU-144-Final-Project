@@ -1,0 +1,184 @@
+---
+title: "Preliminary Analysis"
+format:
+  html:
+    theme: spacelab
+link-citations: yes
+self-contained: true
+execute: 
+  eval: true
+  message: false
+  warning: false
+editor_options: 
+  chunk_output_type: inline
+authors: "Feng Wan and Lily Eichler"
+date: "November 22, 2022"
+---
+
+## Data and Hypotheses
+
+We are interested in researching whether the number of COVID-19 vaccines per region has an effect on the number of confirmed COVID-19 cases per region and the proportion of confirmed COVID-19 cases to population within that region. Our data is a combination of the World Health Organization's collected data on the COVID-19 confirmed cases per country, ourworldindata.org's data on vaccines distributed by country, and kaggle.com's data on the world population in 2020 by country. The first data set includes information on the date the data was collected, the number of confirmed COVID-19 cases, and the number of related deaths by country. The second data set includes information about the date of data collection, the number of COVID-19 cases, the number of related deaths, the number of both positive and negative COVID-19 tests, the number of vaccines, and the number of people vaccinated with various numbers of dosages by country. The third data set includes information on the population for 2020 by country.
+
+Our null hypothesis is that there is no difference in number of confirmed COVID-19 cases or proportion of confirmed COVID-19 cases to population based on the number of vaccines distributed for any region, and that any perceived effect is due to natural variability within the data. Our alternative hypothesis is that the number of confirmed COVID-19 cases or proportion of confirmed COVID-19 cases to population and the number of distributed vaccines within a region will be inversely related, with the number of cases and proportion of cases to population decreasing as the number of vaccines increases.
+
+## In-Depth Explanation of Variables
+
+The `case` data set was filtered for only the dates of 12/30/2020, 12/30/2021, and 11/1/2022 to get one date with data indicative of the end of each year (or, in the case of 2022, the data at the beginning of the current month for the most recent data). New variables were added to the `case` data set of `region` and `time`, which measure the World Health Organization region the country the data was collected from lies within and the year the data was collected, respectively. Not Applicable (`NA`) values were removed from the `region` variable and it was converted into a factor in order to relevel its levels. For the `vaccines` data set, the data was also filtered to exclude `NA` values, and only the `location`, `date`, `year`, and `total_vaccinations_per_hundred` variables were selected to use in our analysis. In the `population` data set, some variable names were changed slightly and only the `Country` and `population` variables were selected. We then created a new variable that represents the number of COVID-19 cases per capita within a country and joined all three data sets.
+
+We have only changed variables in the original `case` data set by filtering and changing the data type of variables. We did not change the variables in the original `vaccines` data set except for filtering for specific data. We have not changed original variables in the `population` data set.
+
+The data for each data set was already tidy, and we joined the data sets in a way that they would remain tidy.
+
+We will check the progression of the number of confirmed COVID-19 cases over time before and without vaccines as our control variables. Some of the regions received vaccines later than others. We can examine specific regions or specific countries with a new variable to represent the date they received their first vaccines or the amount of time the COVID-19 cases were able to develop without the interference of the vaccines and compare the progression of COVID-19 cases in those countries with the progression of cases in countries that did receive the vaccine. This way, we will be able to determine if the change in the number of COVID-19 cases is actually due to the natural progression of time and whether the distribution of vaccines actually has an effect, as time itself is a confounding variable in this case.
+
+```{r}
+#| message: false
+#| warning: false
+# Loading the necessary packages
+
+library(tidyverse)
+library(readr)
+library(ggridges)
+library(tidymodels)
+library(lubridate)
+```
+
+```{r}
+#| message: false
+#| warning: false
+# Reading in the data
+
+case <- read_csv("covid_cases.csv")
+vaccines <- read_csv("owid-covid-data.csv")
+population <- read_csv("population_by_country_2020.csv")
+```
+
+## Data Tidying
+
+```{r Labeling time of data}
+#| message: false
+#| warning: false
+# Creating and mutating necessary variables within the case data set, and filtering for the necessary data
+
+case <- case %>%
+  mutate(Date_reported = as.character(Date_reported)) %>%
+  filter(Date_reported %in% c('2020-12-30', '2022-11-01', '2021-12-30')) %>%
+  mutate(region = `WHO_region`) %>%
+  filter(region != "NA") %>%
+  mutate(region = factor(region)) %>%
+  mutate(region = fct_relevel(region, "Other", after = 0)) %>%
+  mutate(time = case_when(Date_reported == "2020-12-30" ~ 2020, 
+                          Date_reported == "2021-12-30" ~ 2021, 
+                          Date_reported == "2022-11-01" ~ 2022))
+```
+
+```{r Slicing for the latest date each year for each country}
+#| message: false
+#| warning: false
+# Filtering and selecting within the vaccines data set for only the necessary data
+
+vaccines <- vaccines %>%
+  filter(!is.na(total_vaccinations_per_hundred)) %>%
+  mutate(year = year(date))
+
+vaccines <- vaccines %>%
+  group_by(location, year) %>%
+  slice(n = n()) %>%
+  select(location, date, year, total_vaccinations_per_hundred)
+```
+
+```{r Changing variable names}
+#| message: false
+#| warning: false
+# Changing variable names within the population data set
+
+population <- population %>%
+  mutate(Country = `Country (or dependency)`) %>%
+  mutate(population = `Population (2020)`) %>%
+  select(Country, population)
+```
+
+```{r Joining Population and Cases and Calculating case per capita}
+#| message: false
+#| warning: false
+# Joining the case and population data sets and mutating a new variable representing cases per capita
+
+case <- case %>%
+  left_join(population)
+
+case <- case %>%
+  mutate(case_per_capita = Cumulative_cases / population) %>%
+  select(Date_reported, Country_code, Country, Cumulative_cases, region, time, population, case_per_capita)
+```
+
+## Descriptive Visualization
+
+```{r Case Distribution Curve}
+#| message: false
+#| warning: false
+# A plot mapping the distribution of COVID-19 cases per capita
+
+case %>%
+  ggplot(aes(x = case_per_capita)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "The Distribution of COVID-19 Cases Per Capita", 
+       x = "COVID-19 Cases Per Capita", 
+       y = "Frequency") + theme_minimal()
+```
+
+```{r Vaccine Distribution Curve}
+#| message: false
+#| warning: false
+# A plot mapping the distribution of COVID-19 vaccinations per hundred
+
+vaccines %>%
+  ggplot(aes(x = total_vaccinations_per_hundred)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "The Distribution of COVID-19 Vaccinations Per Hundred", 
+       x = "COVID-19 Vaccinations Per Hundred", 
+       y = "Frequency") + theme_minimal()
+```
+
+```{r Relationship between Explanatory and Response Variable}
+#| message: false
+#| warning: false
+# Creating the full_data data set by joining case with vaccines and plotting a graph of the relationship between cases per capita and vaccinations per hundred faceted by region with linear regression lines
+
+full_data <- case %>%
+  left_join(vaccines, by = c("Country" = "location", "time" = "year"))
+
+full_data %>%
+  ggplot(aes(x = total_vaccinations_per_hundred, y = case_per_capita)) +
+  geom_jitter(aes(color = region)) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "The Relationship Between COVID-19 Cases Per Capita and COVID-19 Vaccinations Per Hundred", 
+       subtitle = "By Region in the World", 
+       x = "COVID-19 Vaccinations Per Hundred", 
+       y = "COVID-19 Cases Per Capita", 
+       color = "Regions") + theme_minimal() + facet_wrap(~ region)
+```
+
+#### Analyzing Hypotheses
+
+The above graphs don't seem to support our null or alternative hypotheses. The linear regression lines for each region in the third graph show that as the COVID-19 vaccinations per hundred increase, the response variable of the COVID-19 cases per capita also increase, indicating a positive relationship between number of vaccinations and number of cases. This is contradictory to our original alternative hypothesis, since we expected the COVID-19 cases per capita to decrease as COVID-19 vaccinations per hundred increased. This also does not seem to fit the null hypothesis, as there seems to be an effect of vaccinations on number of cases, though an experiment was not conducted, so only an association can be assumed, not actual causation. Also, we have not checked our control variables in this preliminary analysis, so there is a chance that the null hypothesis is true and that the number of confirmed COVID-19 cases would have increased over time regardless of the distribution of vaccines. In our actual analysis, we will have to account for this possibility with further plots and analysis.
+
+## Linear Regression
+
+```{r Linear Regression Model}
+#| message: false
+#| warning: false
+# Creating the linear regression line for the data as a whole, not faceted by region
+
+linear_reg <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(case_per_capita ~ total_vaccinations_per_hundred, data = full_data) %>%
+  tidy()
+```
+
+#### Linear Regression Equation
+
+$\hat {Case-Per-Capita} = `r linear_reg[1, 2]` +\bar {Vaccination-Per-Hundred} \times`r linear_reg[2, 2]`$
+
+## Conclusion
+
+In our first attempt to analyze our data, we found that for all regions in the world, as the COVID-19 vaccinations per hundred people increases, the COVID-19 cases per capita actually decreases. This hypothesis itself has not met our expectations. In fact, it presents an argument contradictory to our expectations. However, the fact that there is a relationship between the vaccines and COVID-19 cases meets our expectations perfectly, since we thought this relationship is analyzable and interesting. Adding on to that, in the data tidying and data analyzing, we actually found some more variables that are worth including, like the differing distribution of cases and vaccines and relationships between them in different parts of the world. These variables might be included in our final project. 

@@ -1,0 +1,254 @@
+---
+title: "The Effect of Vaccines on COVID-19"
+subtitle: "Lily Eichler and Feng Wan"
+format: 
+  revealjs: 
+    embed-resources: true
+    theme: "night" 
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+## Introduction to the Topic and Our Motivation
+
+COVID-19 has been an incredibly prominent aspect of all of our daily
+lives for the past three years. It has resulted in millions of deaths
+and innumerable cultural and societal changes. The development and
+distribution of billions of vaccines in response have resulted in a
+return to a reality that somewhat resembles pre-pandemic life. **Our
+study aimed to determine whether vaccines have had a measurable effect
+on the number of new COVID-19 cases each day, what this effect is, and
+how it differs in different regions around the world.**
+
+## Introduction to Our Data
+
+Our data is a combination of the COVID-19 case data from the World
+Health Organization, the vaccine distribution data from the Our World in
+Data Organization, and data on the world population by country in 2020
+from kaggle.com. We combined the three data sets to examine the effect
+of new vaccines distributed on new COVID-19 cases per 1000 people of the
+population of each region of the world in 2021 and 2022.
+
+## Hypotheses
+
+Our null hypothesis is that there is no effect of the distribution of
+vaccines on new confirmed COVID-19 cases for any region of the world.
+H~0~: β = 0.
+
+Our alternative hypothesis is that there is an effect of the
+distribution of vaccines on new confirmed COVID-19 cases for at least
+one region of the world. H~A~: β != 0.
+
+Our significance level will be equal to 0.05.
+
+## COVID-19 Cases vs. Vaccines
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Loading the necessary packages and data sets
+
+library(tidyverse)
+library(readr)
+library(tidymodels)
+library(lubridate)
+library(knitr)
+
+case <- read_csv("Data/covid_cases.csv")
+vaccines <- read_csv("Data/owid-covid-data.csv")
+population <- read_csv("Data/population_by_country_2020.csv")
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Mutating, tidying, and joining the data sets as necessary for our analysis
+
+case <- case %>%
+  mutate(year = year(Date_reported)) %>%
+  mutate(month = month(Date_reported)) %>%
+  mutate(day = day(Date_reported)) %>%
+  mutate(region = `WHO_region`) %>%
+  filter(region != "NA") %>%
+  mutate(region = factor(region)) %>%
+  mutate(region = fct_relevel(region, "Other", after = 0))
+
+vaccines <- vaccines %>%
+  filter(!is.na(total_vaccinations_per_hundred)) %>%
+  mutate(year = year(date)) %>%
+  mutate(month = month(date)) %>%
+  mutate(day = day(date)) %>%
+  select(location, date, year, month, day, total_vaccinations_per_hundred)
+
+population <- population %>%
+  mutate(Country = `Country (or dependency)`) %>%
+  mutate(population = `Population (2020)`) %>%
+  select(Country, population)
+
+case <- case %>%
+  left_join(population)
+
+full_data <- case %>%
+  left_join(vaccines, by = c("Country" = "location", "year", "month", "day")) %>%
+  filter(!is.na(total_vaccinations_per_hundred)) %>%
+  group_by(Country) %>%
+  mutate(lag_vaccine = lag(total_vaccinations_per_hundred, n = 14)) %>%
+  filter(!is.na(lag_vaccine)) %>%
+  group_by(Country, year, month) %>%
+  slice(n = n())
+
+full_data <- full_data %>%
+  group_by(Country) %>%
+  mutate(new_cases = Cumulative_cases - lag(Cumulative_cases, n = 1), 
+         new_vaccine = total_vaccinations_per_hundred - lag(total_vaccinations_per_hundred, n = 1)) %>%
+  filter(!is.na(new_cases), !is.na(new_vaccine)) %>%
+  mutate(new_case_per_10000 = new_cases * 10000 / population) %>%
+  select(Date_reported, Country, year, month, day, region, new_case_per_10000, new_vaccine, population) %>%
+  mutate(log_new_case = log(new_case_per_10000 + 0.00001))
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Plotting the relationship between vaccines and cases with a logarithm regression line
+
+full_data %>%
+  ggplot(aes(x = new_vaccine, y = log_new_case)) +
+  geom_jitter(alpha = 0.5) +
+  geom_smooth(se = FALSE, method = "lm") +
+  labs(title = "Logged COVID-19 Cases Per Capita vs. COVID-19 Vaccinations Per Hundred",
+       subtitle = "By Region (2021-2022)",
+       x = "New COVID-19 Vaccinations", 
+       y = "New COVID-19 Cases Per 10000 People") + theme_minimal() + facet_wrap(~ region)
+```
+
+## Residual Plots
+
+::: columns
+::: {.column width="50%"}
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Plotting the spread of the residuals around the linear regression line
+
+linear_reg <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(new_case_per_10000 ~ new_vaccine + day + month + year + region, data = full_data)
+
+linear_reg_aug <- augment(linear_reg$fit)
+
+ggplot(linear_reg_aug, mapping = aes(x = .fitted, y = .resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "gray", lty = "dashed") +
+  labs(title = "Linear Residual Plot", x = "Predicted New Cases", y = "Residuals") + theme_minimal()
+```
+
+::: incremental
+-   Shows a linear pattern
+-   Not ideal because it is not randomly scattered
+:::
+:::
+
+::: {.column width="50%"}
+```{r}
+log_reg <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(log(new_case_per_10000 + 0.00001) ~ new_vaccine + day + month + year + region, data = full_data)
+
+log_reg_aug <- augment(log_reg$fit)
+
+ggplot(log_reg_aug, mapping = aes(x = .fitted, y = .std.resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "gray", lty = "dashed") +
+  labs(x = "Predicted New Cases", y = "Residuals",
+       title = "Logarithm Residual Plot") + theme_minimal()
+```
+
+::: incremental
+-   Randomly scattered around the regression line
+-   Relatively ideal in comparison with the linear residual plot
+:::
+:::
+:::
+
+## Null Distribution {.smaller}
+
+```{r}
+#| warning: false
+#| out-width: 100%
+# Plotting the logarithm regression line
+
+log_reg <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(log_new_case ~ new_vaccine + day + month + year + region, data = full_data)
+
+log_reg_tidy <- log_reg %>%
+  tidy()
+```
+
+```{r}
+#| warning: false
+#| out-width: 100%
+# Calculating the observed fit, simulating the null distribution for vaccines, and calculating the p-value
+
+obs_fit <- full_data %>%
+  specify(log_new_case ~ new_vaccine + day + month + year + region) %>%
+  fit()
+
+set.seed(144)
+null_fits <- full_data %>%
+  specify(log_new_case ~ new_vaccine + day + month + year + region) %>%
+  hypothesize(null = "independence") %>%
+  generate(reps = 1000, type = "permute") %>%
+  fit()
+
+filtered_null_fits <- null_fits %>%
+  filter(term %in% c("new_vaccine"))
+attr(filtered_null_fits, "fitted") <- TRUE
+attr(filtered_null_fits, "type") <- "permute"
+  
+filtered_null_fits %>%
+visualize() + shade_p_value(obs_fit, direction = "both")
+
+p_value <- get_p_value(null_fits, obs_stat = obs_fit, direction = "both")
+```
+
+$\hat {NewCase} = `r log_reg_tidy[1, 2]` + \bar {NewVaccine} \times `r exp(log_reg_tidy[2, 2])` + .....$
+
+::: incremental
+-   From the null distribution, we calculated a p-value of 0.068
+-   Since the p-value is greater than the significance level of 0.05, we
+    fail to reject the null hypothesis
+-   We cannot claim that there is an effect of COVID-19 vaccines on
+    cases for any region of the world
+:::
+
+## Confidence Interval
+
+::: incremental
+-   The 95% confidence interval is (0.00296, 0.0256)
+-   We are 95% confident that the true change of number of cases caused
+    by the number of vaccines lies between the values of 0.00296 and
+    0.0256
+-   This doesn't support the null distribution test, as we fail to
+    reject the null hypothesis, suggesting that the true change of cases
+    due to vaccines is equal to 0
+-   The confidence interval does not include 0 (though it does include
+    some values very close to it), so the two tests do not agree
+:::
+
+## Conclusions and Future Work
+
+::: incremental
+-   In the future, we will:
+-   Account for more confounding variables
+-   Change the lagged function based on different potency periods of
+    different types of vaccines
+-   Set a more specific alternative hypothesis (along with a more
+    specific null hypothesis to match)
+:::
